@@ -18,6 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "adc.h"
 #include "can.h"
 #include "dma.h"
 #include "usart.h"
@@ -28,6 +29,7 @@
 #include "stdio.h"
 #include "string.h"
 #include "tm1637.h"
+#include "stdbool.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -44,11 +46,21 @@ enum BUTTON
 	BUTTON_LEFT,
 	BUTTON_RIGHT,
 	BUTTON_MAX
-} ;
+};
+
+enum JOY
+{
+	JOY_X =0,
+	JOY_Y,
+	JOY_MAX
+};
+
 #define TIME_SEND 300
-#define SPEED_V 40
-#define SPEED_H 300
+#define SPEED_V 100
+#define SPEED_H 500
 #define DELAY 5
+bool joystick;
+uint32_t joy_0_value[JOY_MAX];
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -106,6 +118,8 @@ int main(void)
   MX_DMA_Init();
   MX_CAN_Init();
   MX_USART1_UART_Init();
+  MX_ADC1_Init();
+  MX_ADC2_Init();
   /* USER CODE BEGIN 2 */
 //  uart1_interrupt();
 //  CAN_Start_Interrupt(&hcan);
@@ -127,6 +141,17 @@ int main(void)
 	tm1637_init(&vDisplay);
 	tm1637_brightness(&hDisplay, 8);
 	tm1637_brightness(&vDisplay, 8);
+
+	HAL_ADCEx_Calibration_Start(&hadc1);
+	HAL_ADCEx_Calibration_Start(&hadc2);
+
+	HAL_ADC_Start(&hadc1);
+	HAL_ADC_Start(&hadc2);
+	HAL_ADC_PollForConversion(&hadc1,1);
+	HAL_ADC_PollForConversion(&hadc2,1);
+
+	joy_0_value[JOY_X] = HAL_ADC_GetValue(&hadc1)/32;
+	joy_0_value[JOY_Y] = HAL_ADC_GetValue(&hadc2)/32;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -134,18 +159,29 @@ int main(void)
   printf("program start\n");
   while (1)
   {
+	  HAL_Delay(DELAY);
+	  if (hcan.State == HAL_CAN_STATE_ERROR)
+	  {
+		  CAN_Reconfigure_And_Start();
+		  HAL_Delay(200);
+	  }
+
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	HAL_Delay(DELAY);
-	if (hcan.State == HAL_CAN_STATE_ERROR)
-	{
-		CAN_Reconfigure_And_Start();
-		HAL_Delay(200);
-	}
 
-	buttons();
-	getAzimuths();
+//	  joystick = HAL_GPIO_ReadPin(JOY_EN_IN_GPIO_Port, JOY_EN_IN_Pin) == GPIO_PIN_SET;
+	  joystick = true;
+	  if (joystick)
+	  {
+		  HAL_ADC_Start(&hadc1);
+		  HAL_ADC_Start(&hadc2);
+		  HAL_ADC_PollForConversion(&hadc1,1);
+		  HAL_ADC_PollForConversion(&hadc2,1);
+	  }
+
+	  buttons();
+	  getAzimuths();
 
   }
   /* USER CODE END 3 */
@@ -159,6 +195,7 @@ void SystemClock_Config(void)
 {
   RCC_OscInitTypeDef RCC_OscInitStruct = {0};
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+  RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
@@ -188,6 +225,12 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_ADC;
+  PeriphClkInit.AdcClockSelection = RCC_ADCPCLK2_DIV6;
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+  {
+    Error_Handler();
+  }
 }
 
 /* USER CODE BEGIN 4 */
@@ -196,7 +239,9 @@ void buttons()
 
 	static GPIO_PinState B_last_state[BUTTON_MAX];
 	static GPIO_PinState B_state[BUTTON_MAX];
-	static  uint16_t count = 0;
+	static int32_t J_last_state[JOY_MAX];
+	static int32_t J_state[JOY_MAX];
+	static uint16_t count = 0;
 	static int16_t speed_h,speed_v;
 
 	count += DELAY;
@@ -204,54 +249,78 @@ void buttons()
 	B_state[BUTTON_DOWN] = HAL_GPIO_ReadPin(B_DOWN_GPIO_Port, B_DOWN_Pin);
 	B_state[BUTTON_LEFT] = HAL_GPIO_ReadPin(B_LEFT_GPIO_Port, B_LEFT_Pin);
 	B_state[BUTTON_RIGHT] = HAL_GPIO_ReadPin(B_RIGHT_GPIO_Port, B_RIGHT_Pin);
+	J_state[JOY_X] = HAL_ADC_GetValue(&hadc1)/32-joy_0_value[JOY_X];
+	J_state[JOY_Y] = HAL_ADC_GetValue(&hadc2)/32-joy_0_value[JOY_Y];
 
-
-	if (B_state[BUTTON_UP] != B_last_state[BUTTON_UP])
+	if (!joystick)
 	{
-		printf("up %i\n",B_state[BUTTON_UP]);
-		B_last_state[BUTTON_UP] = B_state[BUTTON_UP];
-		count = 0xFFFF;
-	}
-	if (B_state[BUTTON_DOWN] != B_last_state[BUTTON_DOWN])
-	{
-		printf("down %i\n",B_state[BUTTON_DOWN]);
-		B_last_state[BUTTON_DOWN] = B_state[BUTTON_DOWN];
-		count = 0xFFFF;
-	}
-	if (B_state[BUTTON_LEFT] != B_last_state[BUTTON_LEFT])
-	{
-		printf("left %i\n",B_state[BUTTON_LEFT]);
-		B_last_state[BUTTON_LEFT] = B_state[BUTTON_LEFT];
-		count = 0xFFFF;
-	}
-	if (B_state[BUTTON_RIGHT] != B_last_state[BUTTON_RIGHT])
-	{
-		printf("right %i\n",B_state[BUTTON_RIGHT]);
-		B_last_state[BUTTON_RIGHT] = B_state[BUTTON_RIGHT];
-		count = 0xFFFF;
+		if (B_state[BUTTON_UP] != B_last_state[BUTTON_UP])
+		{
+			printf("up %i\n",B_state[BUTTON_UP]);
+			B_last_state[BUTTON_UP] = B_state[BUTTON_UP];
+			count = 0xFFFF;
+		}
+		if (B_state[BUTTON_DOWN] != B_last_state[BUTTON_DOWN])
+		{
+			printf("down %i\n",B_state[BUTTON_DOWN]);
+			B_last_state[BUTTON_DOWN] = B_state[BUTTON_DOWN];
+			count = 0xFFFF;
+		}
+		if (B_state[BUTTON_LEFT] != B_last_state[BUTTON_LEFT])
+		{
+			printf("left %i\n",B_state[BUTTON_LEFT]);
+			B_last_state[BUTTON_LEFT] = B_state[BUTTON_LEFT];
+			count = 0xFFFF;
+		}
+		if (B_state[BUTTON_RIGHT] != B_last_state[BUTTON_RIGHT])
+		{
+			printf("right %i\n",B_state[BUTTON_RIGHT]);
+			B_last_state[BUTTON_RIGHT] = B_state[BUTTON_RIGHT];
+			count = 0xFFFF;
+		}
+	} else {
+		if (J_state[JOY_X] != J_last_state[JOY_X])
+		{
+			printf("X %i\n",J_state[JOY_X]);
+			J_last_state[JOY_X] = J_state[JOY_X];
+			count = 0xFFFF;
+		}
+		if (J_state[JOY_Y] != J_last_state[JOY_Y])
+		{
+			printf("Y %i\n",J_state[JOY_Y]);
+			J_last_state[JOY_Y] = J_state[JOY_Y];
+			count = 0xFFFF;
+		}
 	}
 	if (count > TIME_SEND)
 	{
-		if (B_state[BUTTON_LEFT] == B_state[BUTTON_RIGHT])
+		if(!joystick)
 		{
-			speed_h = 0;
-		} else if (B_state[BUTTON_LEFT] == GPIO_PIN_SET)
-		{
-			speed_h = -SPEED_H;
-		} else if (B_state[BUTTON_RIGHT] == GPIO_PIN_SET)
-		{
-			speed_h = SPEED_H;
+			if (B_state[BUTTON_LEFT] == B_state[BUTTON_RIGHT])
+			{
+				speed_h = 0;
+			} else if (B_state[BUTTON_LEFT] == GPIO_PIN_SET)
+			{
+				speed_h = -SPEED_H;
+			} else if (B_state[BUTTON_RIGHT] == GPIO_PIN_SET)
+			{
+				speed_h = SPEED_H;
+			}
+			if (B_state[BUTTON_UP] == B_state[BUTTON_DOWN])
+			{
+				speed_v = (0);
+			} else if (B_state[BUTTON_DOWN] == GPIO_PIN_SET)
+			{
+				speed_v = (-SPEED_V);
+			} else if (B_state[BUTTON_UP] == GPIO_PIN_SET)
+			{
+				speed_v = (SPEED_V);
+			}
+		}else {
+			speed_h = SPEED_H*(J_state[JOY_X])/6;
+			speed_v = SPEED_V*(J_state[JOY_Y])/32;
 		}
-		if (B_state[BUTTON_UP] == B_state[BUTTON_DOWN])
-		{
-			speed_v = (0);
-		} else if (B_state[BUTTON_DOWN] == GPIO_PIN_SET)
-		{
-			speed_v = (-SPEED_V);
-		} else if (B_state[BUTTON_UP] == GPIO_PIN_SET)
-		{
-			speed_v = (SPEED_V);
-		}
+
 		count = 0;
 		send_speed(speed_h,speed_v);
 	}
