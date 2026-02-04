@@ -42,11 +42,9 @@ void MX_CAN_Init(void);
 
 /* USER CODE BEGIN Prototypes */
 
-void CAN_Start_Interrupt(CAN_HandleTypeDef *hcan);
 void CAN_Send(uint16_t nodeId,uint8_t *data,uint8_t size);
 void CAN_Reconfigure_And_Start(void);
 
-void send_speed(int16_t speed_h,int16_t speed_v);
 /* USER CODE END Prototypes */
 
 #ifdef __cplusplus

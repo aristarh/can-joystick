@@ -146,7 +146,6 @@ void CAN_Reconfigure_And_Start(void)
 		printf("CAN Start Failed!\r\n");
 		Error_Handler();
 	}
-    CAN_Start_Interrupt(&hcan);
 
     printf("CAN (Re)Started Successfully!\r\n");
 }
@@ -179,56 +178,4 @@ void CAN_Send(uint16_t nodeId,uint8_t *data,uint8_t size)
     }
 }
 
-void CAN_Start_Interrupt(CAN_HandleTypeDef *hcan)
-{
-//	if (HAL_CAN_ActivateNotification(hcan, CAN_IT_RX_FIFO0_MSG_PENDING)!= HAL_OK)
-//	{
-//		Error_Handler();
-//	}
-}
-/*
-void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
-{
-	static CAN_RxHeaderTypeDef header;
-	uint8_t data[CAN_MESSAGE_SIZE];
-    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &header, data) == HAL_OK)
-    {
-//        add_can_message(header.Identifier, data, header.DataLength);
-    	printf("0 get message id %i",header.StdId);
-    	HAL_UART_Transmit(&huart1, data, header.DLC, 0xFF);
-    	printf("\n");
-    } else
-    	printf("can not ok!\n");
-
-//    CAN_Start_Interrupt(hcan);
-}
-
-void HAL_CAN_RxFifo1MsgPendingCallback(CAN_HandleTypeDef *hcan)
-{
-	static CAN_RxHeaderTypeDef header;
-	uint8_t data[CAN_MESSAGE_SIZE];
-    if (HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO1, &header, data) == HAL_OK)
-    {
-//        add_can_message(header.Identifier, data, header.DataLength);
-    	printf("1 get message id %i",header.StdId);
-    	HAL_UART_Transmit(&huart1, data, header.DLC, 0xFF);
-    	printf("\n");
-    } else
-    	printf("can not ok!\n");
-
-//    CAN_Start_Interrupt(hcan);
-}
-*/
-
-void send_speed(int16_t speed_h,int16_t speed_v)
-{
-	static uint8_t data[8];
-	data[0] = 0x00;
-	data[1] =speed_h>>8;
-	data[2] =speed_h&0xFF;
-
-	data[3] =speed_v>>8;
-	data[4] =speed_v&0xFF;
-	CAN_Send(0X205, data, 5);
-}
 /* USER CODE END 1 */
