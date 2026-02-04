@@ -132,8 +132,8 @@ static edit_state_t  edit_state = EDIT_NONE;
 static timed_phase_t timed_phase = PHASE_IDLE;
 static bool          timed_running = false;
 
-static uint8_t speed_value = 10;
-static uint8_t time_value_s = 5;
+static int16_t speed_value = 10;
+static uint16_t time_value_100ms = 5;
 
 static uint32_t last_blink_ms = 0;
 static bool     blink_on = true;
@@ -324,7 +324,7 @@ static void start_stop_timed(void)
     timed_running = !timed_running;
     if (timed_running) {
         timed_phase = PHASE_UP;
-        start_phase_up(speed_value);
+        send_speed(speed_value);
         last_blink_ms = HAL_GetTick();
     } else {
         timed_phase = PHASE_IDLE;
@@ -338,14 +338,14 @@ static void timed_fsm_tick(void)
 
     switch (timed_phase) {
     case PHASE_UP:
-        if (now - last_blink_ms >= time_value_s * 1000UL) {
+        if (now - last_blink_ms >= time_value_100ms * 100UL) {
             timed_phase = PHASE_DOWN;
-            start_phase_down(speed_value);
+            send_speed(-speed_value);
             last_blink_ms = now;
         }
         break;
     case PHASE_DOWN:
-        if (now - last_blink_ms >= time_value_s * 1000UL) {
+        if (now - last_blink_ms >= time_value_100ms * 1000UL) {
             timed_phase = PHASE_IDLE;
             timed_running = false;
         }
@@ -369,8 +369,8 @@ static void handle_buttons(void)
     }
 
     if (edit_state == EDIT_TIME) {
-        if (ev_up.pressed && time_value_s < TIME_MAX_SEC)   time_value_s += TIME_STEP_SEC;
-        if (ev_down.pressed && time_value_s > TIME_MIN_SEC) time_value_s -= TIME_STEP_SEC;
+        if (ev_up.pressed && time_value_100ms < TIME_MAX_SEC)   time_value_100ms += TIME_STEP_SEC;
+        if (ev_down.pressed && time_value_100ms > TIME_MIN_SEC) time_value_100ms -= TIME_STEP_SEC;
     } else if (edit_state == EDIT_SPEED) {
         if (ev_up.pressed && speed_value < SPEED_MAX)   speed_value += SPEED_STEP;
         if (ev_down.pressed && speed_value > SPEED_MIN) speed_value -= SPEED_STEP;
@@ -378,8 +378,10 @@ static void handle_buttons(void)
         if (app_mode == MODE_DIRECT) {
             if (ev_up.pressed && speed_value < SPEED_MAX)   speed_value += SPEED_STEP;
             if (ev_down.pressed && speed_value > SPEED_MIN) speed_value -= SPEED_STEP;
-            if (ev_up.pressed || ev_down.pressed) {
-                send_speed_now(speed_value);
+            if (ev_up.pressed) {
+            	send_speed(speed_value);
+            } else if (ev_down.pressed) {
+            	send_speed(-speed_value);
             }
         }
     }
@@ -409,7 +411,7 @@ static void update_displays(void)
     if (blink_time && !blink_on) {
         tm1637_disp_clear(&timeDisplay);
     } else {
-        tm1637_disp_printf(&timeDisplay, "%4u", time_value_s);
+        tm1637_disp_printf(&timeDisplay, "%4u", time_value_100ms);
     }
 }
 
@@ -428,6 +430,22 @@ static void app_tick(void)
     timed_fsm_tick();
     update_displays();
     update_leds();
+}
+
+void send_speed(int16_t speed)
+{
+	uint8_t data[8];
+	data[0]=0x01;
+	data[1]=0x20;
+	data[2]=0x0D;
+	data[3]=0x03;
+	uint16_t v = speed;
+	data[4]=v & 0xFF;
+	data[5]=(v>>8)&0xFF;
+	if(speed < 0)
+	{data[6] = 0xFF; data[7]=0xFF;} else
+	{data[6] = 0; data[7]=0;}
+	CAN_Send(0x201,data,8);
 }
 /* USER CODE END 4 */
 
