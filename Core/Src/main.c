@@ -56,8 +56,6 @@ typedef struct but
 	uint32_t time_pressed;
 } button;
 
-static button buttons[BUTTON_MAX];
-
 enum LEDS
 {
 	LED_DBG,
@@ -79,8 +77,6 @@ typedef struct
 	uint32_t time_change;
 } led;
 
-static led leds[LED_MAX];
-
 typedef enum {
     MODE_DIRECT = 0,
     MODE_TIMED
@@ -101,14 +97,17 @@ typedef enum {
 typedef struct {
     bool pressed;
     bool held;
+    bool repeat;
 } button_event_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-#define BUTTON_DEBOUNCE_MS   20
-#define BUTTON_HOLD_MS       800
-#define BLINK_PERIOD_MS      350
+#define BUTTON_DEBOUNCE_MS     20
+#define BUTTON_HOLD_MS         800
+#define BUTTON_REPEAT_DELAY_MS 500   // пауза до автоповтору
+#define BUTTON_REPEAT_MS       120   // інтервал автоповтору
+#define BLINK_PERIOD_MS        350
 
 #define SPEED_MIN            1
 #define SPEED_MAX            9999
@@ -117,6 +116,8 @@ typedef struct {
 #define TIME_MAX_SEC         9999
 #define TIME_STEP_SEC        1
 #define DELAY 5
+
+#define LED_RX_HOLD_MS       500
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -132,15 +133,20 @@ static edit_state_t  edit_state = EDIT_NONE;
 static timed_phase_t timed_phase = PHASE_IDLE;
 static bool          timed_running = false;
 
-static int16_t speed_value = 10;
+static int16_t  speed_value = 10;
 static uint16_t time_value_100ms = 5;
 
 static uint32_t last_blink_ms = 0;
 static bool     blink_on = true;
 
-/* для антидребезгу */
-static uint32_t btn_ts[BUTTON_MAX] = {0};
-static bool     btn_state[BUTTON_MAX] = {0};
+/* для антидребезгу + автоповтор */
+static uint32_t btn_ts[BUTTON_MAX]        = {0};
+static uint32_t btn_hold_ts[BUTTON_MAX]   = {0};
+static uint32_t btn_repeat_ts[BUTTON_MAX] = {0};
+static bool     btn_state[BUTTON_MAX]     = {0};
+
+/* індикація RX */
+static uint32_t last_can_rx_ms = 0;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -155,6 +161,7 @@ static void start_stop_timed(void);
 static void update_displays(void);
 static void update_leds(void);
 static void timed_fsm_tick(void);
+static void poll_can_rx(void);
 
 static void send_speed(int16_t speed);
 /* USER CODE END PFP */
@@ -282,19 +289,29 @@ void SystemClock_Config(void)
 static button_event_t check_button(enum BUTTONS b)
 {
     button_event_t ev = {0};
-    bool level = (HAL_GPIO_ReadPin(GPIOA, (uint16_t[]){BTN_UP_Pin, BTN_DOWN_Pin, BTN_MODE_Pin, BTN_START_Pin, BTN_DBG_Pin}[b]) == GPIO_PIN_RESET); // pull-up: натиснуто = 0
+    static const uint16_t pins[] = {BTN_UP_Pin, BTN_DOWN_Pin, BTN_MODE_Pin, BTN_START_Pin, BTN_DBG_Pin};
+    bool level = (HAL_GPIO_ReadPin(GPIOA, pins[b]) == GPIO_PIN_RESET); // pull-up: натиснуто = 0
     uint32_t now = HAL_GetTick();
 
     if (level && !btn_state[b] && (now - btn_ts[b] > BUTTON_DEBOUNCE_MS)) {
-        btn_state[b] = true;
-        btn_ts[b] = now;
+        btn_state[b]     = true;
+        btn_ts[b]        = now;
+        btn_hold_ts[b]   = now;
+        btn_repeat_ts[b] = now;
         ev.pressed = true;
+    } else if (level && btn_state[b]) {
+        if (!ev.pressed && (now - btn_hold_ts[b] > BUTTON_HOLD_MS)) {
+            ev.held = true;
+            btn_hold_ts[b] = now + 1000000; // щоб не багаторазово
+        }
+        if ((now - btn_ts[b] >= BUTTON_REPEAT_DELAY_MS) &&
+            (now - btn_repeat_ts[b] >= BUTTON_REPEAT_MS)) {
+            ev.repeat = true;
+            btn_repeat_ts[b] = now;
+        }
     } else if (!level && btn_state[b]) {
         btn_state[b] = false;
         btn_ts[b] = now;
-    } else if (btn_state[b] && !ev.pressed && (now - btn_ts[b] > BUTTON_HOLD_MS)) {
-        ev.held = true;
-        btn_ts[b] = now + 1000000; // щоб не багатор��зово спрацьовувало
     }
     return ev;
 }
@@ -362,6 +379,9 @@ static void handle_buttons(void)
     button_event_t ev_down  = check_button(BUTTON_DOWN);
     button_event_t ev_start = check_button(BUTTON_START);
 
+    const bool up_act   = ev_up.pressed   || ev_up.repeat;
+    const bool down_act = ev_down.pressed || ev_down.repeat;
+
     if (ev_mode.held) {
         cycle_edit_state();
     } else if (ev_mode.pressed) {
@@ -369,20 +389,17 @@ static void handle_buttons(void)
     }
 
     if (edit_state == EDIT_TIME) {
-        if (ev_up.pressed && time_value_100ms < TIME_MAX_SEC)   time_value_100ms += TIME_STEP_SEC;
-        if (ev_down.pressed && time_value_100ms > TIME_MIN_SEC) time_value_100ms -= TIME_STEP_SEC;
+        if (up_act   && time_value_100ms < TIME_MAX_SEC) time_value_100ms += TIME_STEP_SEC;
+        if (down_act && time_value_100ms > TIME_MIN_SEC) time_value_100ms -= TIME_STEP_SEC;
     } else if (edit_state == EDIT_SPEED) {
-        if (ev_up.pressed && speed_value < SPEED_MAX)   speed_value += SPEED_STEP;
-        if (ev_down.pressed && speed_value > SPEED_MIN) speed_value -= SPEED_STEP;
+        if (up_act   && speed_value < SPEED_MAX) speed_value += SPEED_STEP;
+        if (down_act && speed_value > SPEED_MIN) speed_value -= SPEED_STEP;
     } else { // EDIT_NONE
         if (app_mode == MODE_DIRECT) {
-            if (ev_up.pressed && speed_value < SPEED_MAX)   speed_value += SPEED_STEP;
-            if (ev_down.pressed && speed_value > SPEED_MIN) speed_value -= SPEED_STEP;
-            if (ev_up.pressed) {
-            	send_speed(speed_value);
-            } else if (ev_down.pressed) {
-            	send_speed(-speed_value);
-            }
+            if (up_act   && speed_value < SPEED_MAX) speed_value += SPEED_STEP;
+            if (down_act && speed_value > SPEED_MIN) speed_value -= SPEED_STEP;
+            if (ev_up.pressed || ev_up.repeat)   send_speed(speed_value);
+            if (ev_down.pressed || ev_down.repeat) send_speed(-speed_value);
         }
     }
 
@@ -421,13 +438,17 @@ static void update_leds(void)
                       (app_mode == MODE_TIMED) ? GPIO_PIN_SET : GPIO_PIN_RESET);
     HAL_GPIO_WritePin(LED_START_GPIO_Port, LED_START_Pin,
                       (timed_running) ? GPIO_PIN_SET : GPIO_PIN_RESET);
-    /* LED_DBG поки не чіпаємо */
+
+    uint32_t now = HAL_GetTick();
+    GPIO_PinState dbg = (now - last_can_rx_ms <= LED_RX_HOLD_MS) ? GPIO_PIN_SET : GPIO_PIN_RESET;
+    HAL_GPIO_WritePin(LED_DBG_GPIO_Port, LED_DBG_Pin, dbg);
 }
 
 static void app_tick(void)
 {
     handle_buttons();
     timed_fsm_tick();
+    poll_can_rx();
     update_displays();
     update_leds();
 }
@@ -446,6 +467,22 @@ void send_speed(int16_t speed)
 	{data[6] = 0xFF; data[7]=0xFF;} else
 	{data[6] = 0; data[7]=0;}
 	CAN_Send(0x201,data,8);
+	CAN_Send(0x202,data,8);
+}
+
+static void poll_can_rx(void)
+{
+    CAN_RxHeaderTypeDef hdr;
+    uint8_t data[CAN_MESSAGE_SIZE];
+    uint32_t now = HAL_GetTick();
+
+    while (HAL_CAN_GetRxFifoFillLevel(&hcan, CAN_RX_FIFO0) > 0) {
+        if (HAL_CAN_GetRxMessage(&hcan, CAN_RX_FIFO0, &hdr, data) == HAL_OK) {
+            last_can_rx_ms = now;
+        } else {
+            break;
+        }
+    }
 }
 /* USER CODE END 4 */
 
