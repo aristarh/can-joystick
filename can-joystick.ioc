@@ -2,12 +2,12 @@
 CAD.formats=
 CAD.pinconfig=
 CAD.provider=
-CAN.BS1=CAN_BS1_4TQ
-CAN.CalculateBaudRate=249999
-CAN.CalculateTimeBit=4000
-CAN.CalculateTimeQuantum=666.6666666666667
+CAN.BS1=CAN_BS1_2TQ
+CAN.CalculateBaudRate=500000
+CAN.CalculateTimeBit=2000
+CAN.CalculateTimeQuantum=500.0
 CAN.IPParameters=CalculateTimeQuantum,CalculateTimeBit,CalculateBaudRate,Prescaler,BS1
-CAN.Prescaler=24
+CAN.Prescaler=18
 Dma.Request0=USART1_RX
 Dma.RequestsNb=1
 Dma.USART1_RX.0.Direction=DMA_PERIPH_TO_MEMORY

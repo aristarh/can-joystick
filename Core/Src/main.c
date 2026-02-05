@@ -43,18 +43,23 @@ enum BUTTONS
 	BUTTON_MAX
 };
 
-enum BUTTON_STATE
+typedef enum
 {
 	BS_RELEASED,
 	BS_PRESSED,
-	BS_HOLD
-};
+	BS_HOLD,
+	BS_NONE
+} BUTTON_STATE;
 
 typedef struct but
 {
-	uint8_t state;
-	uint32_t time_pressed;
+	bool level;
+	bool pressed;
+	bool holded;
+	uint32_t time_changed;
 } button;
+
+static button buttons[BUTTON_MAX];
 
 enum LEDS
 {
@@ -77,47 +82,35 @@ typedef struct
 	uint32_t time_change;
 } led;
 
+
 typedef enum {
     MODE_DIRECT = 0,
-    MODE_TIMED
-} app_mode_t;
+	MODE_REPEAT,
+    MODE_CHANGE
+} work_modes;
 
 typedef enum {
-    EDIT_NONE = 0,
-    EDIT_TIME,
-    EDIT_SPEED
-} edit_state_t;
+	CHANGE_NONE,
+	CHANGE_SPEED,
+	CHANGE_TIME
+} change_modes;
 
-typedef enum {
-    PHASE_IDLE = 0,
-    PHASE_UP,
-    PHASE_DOWN
-} timed_phase_t;
-
-typedef struct {
-    bool pressed;
-    bool held;
-    bool repeat;
-} button_event_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define BUTTON_DEBOUNCE_MS     20
-#define BUTTON_HOLD_MS         800
-#define BUTTON_REPEAT_DELAY_MS 500   // пауза до автоповтору
-#define BUTTON_REPEAT_MS       120   // інтервал автоповтору
+#define BUTTON_HOLD_MS         1000
+#define BUTTON_REPEAT_MS       250   // інтервал автоповтору
 #define BLINK_PERIOD_MS        350
 
-#define SPEED_MIN            1
-#define SPEED_MAX            9999
-#define SPEED_STEP           1
-#define TIME_MIN_SEC         1
-#define TIME_MAX_SEC         9999
-#define TIME_STEP_SEC        1
+#define VAL_MIN            1
+#define VAL_MAX            9999
+#define VAL_STEP           1
+#define VAL_BIG_STEP       20
 #define DELAY 5
 
-#define LED_RX_HOLD_MS       500
+#define LED_RX_HOLD_MS       50
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -128,22 +121,18 @@ typedef struct {
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-static app_mode_t    app_mode = MODE_DIRECT;
-static edit_state_t  edit_state = EDIT_NONE;
-static timed_phase_t timed_phase = PHASE_IDLE;
-static bool          timed_running = false;
+static work_modes app_mode = MODE_DIRECT;
+static change_modes change_mode = CHANGE_NONE;
 
-static int16_t  speed_value = 10;
+static bool repeat_started = false;
+static bool repeat_up = true;
+static uint32_t repeat_time = 0;
+
+static uint16_t  speed_value = 10;
 static uint16_t time_value_100ms = 5;
 
-static uint32_t last_blink_ms = 0;
-static bool     blink_on = true;
-
-/* для антидребезгу + автоповтор */
-static uint32_t btn_ts[BUTTON_MAX]        = {0};
-static uint32_t btn_hold_ts[BUTTON_MAX]   = {0};
-static uint32_t btn_repeat_ts[BUTTON_MAX] = {0};
-static bool     btn_state[BUTTON_MAX]     = {0};
+static uint32_t last_disp_blink_ms = 0;
+static bool     disp_blink_on = true;
 
 /* індикація RX */
 static uint32_t last_can_rx_ms = 0;
@@ -152,15 +141,14 @@ static uint32_t last_can_rx_ms = 0;
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 /* USER CODE BEGIN PFP */
-static void app_tick(void);
+static GPIO_PinState button_state(enum BUTTONS b);
 static void handle_buttons(void);
-static button_event_t check_button(enum BUTTONS b);
-static void apply_mode_short_press(void);
-static void cycle_edit_state(void);
+static BUTTON_STATE check_button(enum BUTTONS b);
+static void mode_short_press(void);
+static void mode_long_press(void);
 static void start_stop_timed(void);
 static void update_displays(void);
 static void update_leds(void);
-static void timed_fsm_tick(void);
 static void poll_can_rx(void);
 
 static void send_speed(int16_t speed);
@@ -241,7 +229,10 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  app_tick();
+	    handle_buttons();
+	    poll_can_rx();
+	    update_displays();
+	    update_leds();
   }
   /* USER CODE END 3 */
 }
@@ -286,146 +277,167 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-static button_event_t check_button(enum BUTTONS b)
+
+static GPIO_PinState button_state(enum BUTTONS b)
 {
-    button_event_t ev = {0};
-    static const uint16_t pins[] = {BTN_UP_Pin, BTN_DOWN_Pin, BTN_MODE_Pin, BTN_START_Pin, BTN_DBG_Pin};
-    bool level = (HAL_GPIO_ReadPin(GPIOA, pins[b]) == GPIO_PIN_RESET); // pull-up: натиснуто = 0
+	switch (b){
+	case BUTTON_UP: return HAL_GPIO_ReadPin(BTN_UP_GPIO_Port, BTN_UP_Pin); break;
+	case BUTTON_DOWN: return HAL_GPIO_ReadPin(BTN_DOWN_GPIO_Port, BTN_DOWN_Pin); break;
+	case BUTTON_DBG: return HAL_GPIO_ReadPin(BTN_DBG_GPIO_Port, BTN_DBG_Pin); break;
+	case BUTTON_MODE: return HAL_GPIO_ReadPin(BTN_MODE_GPIO_Port, BTN_MODE_Pin); break;
+	case BUTTON_START: return HAL_GPIO_ReadPin(BTN_START_GPIO_Port, BTN_START_Pin); break;
+	default:
+	}
+	return GPIO_PIN_RESET;
+}
+
+static BUTTON_STATE check_button(enum BUTTONS b)
+{
+	bool level = (button_state(b) == GPIO_PIN_RESET); // Active LOW
+	uint32_t now = HAL_GetTick();
+	uint32_t duration = now - buttons[b].time_changed;
+
+	if (level != buttons[b].level)
+	{
+		buttons[b].time_changed = now;
+		buttons[b].level = level;
+		return BS_NONE;
+	}
+
+	if (duration > BUTTON_DEBOUNCE_MS)
+	{
+		if (level && !buttons[b].pressed)
+		{
+			buttons[b].pressed = true;
+			return BS_PRESSED;
+		}
+		if (level && buttons[b].pressed)
+		{
+			uint16_t time = (buttons[b].holded)? BUTTON_REPEAT_MS:BUTTON_HOLD_MS;
+
+			if (duration > time)
+			{
+				buttons[b].time_changed = now;
+				buttons[b].holded = true;
+				return BS_HOLD;
+			}
+		}
+		if (!level && buttons[b].pressed)
+		{
+			buttons[b].pressed = false;
+			buttons[b].holded = false;
+			return BS_RELEASED;
+		}
+	}
+	return BS_NONE;
+}
+
+static void mode_short_press(void)
+{
+	if (repeat_started) return;
+    if (app_mode == MODE_CHANGE)
+    {
+    	if (change_mode == CHANGE_TIME)
+    		change_mode = CHANGE_SPEED;
+    	else change_mode = CHANGE_TIME;
+    } else app_mode = (app_mode == MODE_DIRECT) ? MODE_REPEAT : MODE_DIRECT;
+}
+
+static void mode_long_press(void)
+{
+	if (repeat_started) return;
+	if (app_mode != MODE_CHANGE)
+	{
+		app_mode = MODE_CHANGE;
+		change_mode = CHANGE_TIME;
+	} else
+	{
+		app_mode = MODE_DIRECT;
+		change_mode = CHANGE_NONE;
+	}
+}
+
+static void handle_buttons(void)
+{
     uint32_t now = HAL_GetTick();
-
-    if (level && !btn_state[b] && (now - btn_ts[b] > BUTTON_DEBOUNCE_MS)) {
-        btn_state[b]     = true;
-        btn_ts[b]        = now;
-        btn_hold_ts[b]   = now;
-        btn_repeat_ts[b] = now;
-        ev.pressed = true;
-    } else if (level && btn_state[b]) {
-        if (!ev.pressed && (now - btn_hold_ts[b] > BUTTON_HOLD_MS)) {
-            ev.held = true;
-            btn_hold_ts[b] = now + 1000000; // щоб не багаторазово
-        }
-        if ((now - btn_ts[b] >= BUTTON_REPEAT_DELAY_MS) &&
-            (now - btn_repeat_ts[b] >= BUTTON_REPEAT_MS)) {
-            ev.repeat = true;
-            btn_repeat_ts[b] = now;
-        }
-    } else if (!level && btn_state[b]) {
-        btn_state[b] = false;
-        btn_ts[b] = now;
+    BUTTON_STATE ms = check_button(BUTTON_MODE);
+    BUTTON_STATE up = check_button(BUTTON_UP);
+    BUTTON_STATE dn = check_button(BUTTON_DOWN);
+    if (ms == BS_HOLD) mode_long_press();
+    else if (ms == BS_PRESSED) mode_short_press();
+    if (app_mode == MODE_REPEAT)
+    {
+    	BUTTON_STATE st = check_button(BUTTON_START);
+    	if (st == BS_RELEASED)
+    	{
+    		repeat_started = !repeat_started;
+    		repeat_up = true;
+    		repeat_time = now;
+    	}
     }
-    return ev;
-}
 
-static void apply_mode_short_press(void)
-{
-    if (edit_state != EDIT_NONE) return; // у редагуванні коротке не міняє режим
-    app_mode = (app_mode == MODE_DIRECT) ? MODE_TIMED : MODE_DIRECT;
-    timed_running = false;
-    timed_phase = PHASE_IDLE;
-}
+    if (app_mode == MODE_CHANGE)
+    {
+    	int v = 0;
+    	if (up == BS_HOLD) v+= VAL_BIG_STEP; else if (up == BS_PRESSED) v+= VAL_STEP; else
+		if (dn == BS_HOLD) v-= VAL_BIG_STEP; else if (dn == BS_PRESSED) v-= VAL_STEP;
+    	if (v)
+    	{
+    		uint16_t *vc = 0;
 
-static void cycle_edit_state(void)
-{
-    if (edit_state == EDIT_NONE) {
-        edit_state = EDIT_TIME;
-    } else if (edit_state == EDIT_TIME) {
-        edit_state = EDIT_SPEED;
-    } else {
-        edit_state = EDIT_NONE;
+    		if (change_mode == CHANGE_SPEED)
+    			vc = &speed_value;
+    		else
+    			vc = &time_value_100ms;
+    		int val = *vc + v;
+			if (val > VAL_MAX) val = VAL_MAX; else
+			if (val < VAL_MIN) val = VAL_MIN;
+			*vc = val;
+    	}
+    } else if (app_mode == MODE_DIRECT)
+    {
+    	if (buttons[BUTTON_UP].pressed) send_speed(speed_value);
+    	else if (buttons[BUTTON_DOWN].pressed) send_speed(-speed_value);
+    	else send_speed(0);
+    } else if (app_mode == MODE_REPEAT)
+    {
+    	if (repeat_started)
+    	{
+    		start_stop_timed();
+    	}
     }
 }
 
 static void start_stop_timed(void)
 {
-    if (app_mode != MODE_TIMED || edit_state != EDIT_NONE) return;
-    timed_running = !timed_running;
-    if (timed_running) {
-        timed_phase = PHASE_UP;
-        send_speed(speed_value);
-        last_blink_ms = HAL_GetTick();
-    } else {
-        timed_phase = PHASE_IDLE;
-    }
-}
-
-static void timed_fsm_tick(void)
-{
-    if (!timed_running) return;
     uint32_t now = HAL_GetTick();
-
-    switch (timed_phase) {
-    case PHASE_UP:
-        if (now - last_blink_ms >= time_value_100ms * 100UL) {
-            timed_phase = PHASE_DOWN;
-            send_speed(-speed_value);
-            last_blink_ms = now;
-        }
-        break;
-    case PHASE_DOWN:
-        if (now - last_blink_ms >= time_value_100ms * 1000UL) {
-            timed_phase = PHASE_IDLE;
-            timed_running = false;
-        }
-        break;
-    default:
-        break;
+    if (now - repeat_time > time_value_100ms * 100)
+    {
+    	repeat_up = !repeat_up;
+    	repeat_time = now;
     }
-}
-
-static void handle_buttons(void)
-{
-    button_event_t ev_mode  = check_button(BUTTON_MODE);
-    button_event_t ev_up    = check_button(BUTTON_UP);
-    button_event_t ev_down  = check_button(BUTTON_DOWN);
-    button_event_t ev_start = check_button(BUTTON_START);
-
-    const bool up_act   = ev_up.pressed   || ev_up.repeat;
-    const bool down_act = ev_down.pressed || ev_down.repeat;
-
-    if (ev_mode.held) {
-        cycle_edit_state();
-    } else if (ev_mode.pressed) {
-        apply_mode_short_press();
-    }
-
-    if (edit_state == EDIT_TIME) {
-        if (up_act   && time_value_100ms < TIME_MAX_SEC) time_value_100ms += TIME_STEP_SEC;
-        if (down_act && time_value_100ms > TIME_MIN_SEC) time_value_100ms -= TIME_STEP_SEC;
-    } else if (edit_state == EDIT_SPEED) {
-        if (up_act   && speed_value < SPEED_MAX) speed_value += SPEED_STEP;
-        if (down_act && speed_value > SPEED_MIN) speed_value -= SPEED_STEP;
-    } else { // EDIT_NONE
-        if (app_mode == MODE_DIRECT) {
-            if (up_act   && speed_value < SPEED_MAX) speed_value += SPEED_STEP;
-            if (down_act && speed_value > SPEED_MIN) speed_value -= SPEED_STEP;
-            if (ev_up.pressed || ev_up.repeat)   send_speed(speed_value);
-            if (ev_down.pressed || ev_down.repeat) send_speed(-speed_value);
-        }
-    }
-
-    if (ev_start.pressed) {
-        start_stop_timed();
-    }
+    int16_t v = (repeat_up)? -speed_value : speed_value;
+    send_speed(v);
 }
 
 static void update_displays(void)
 {
     uint32_t now = HAL_GetTick();
-    if (now - last_blink_ms >= BLINK_PERIOD_MS) {
-        last_blink_ms = now;
-        blink_on = !blink_on;
+    if (now - last_disp_blink_ms >= BLINK_PERIOD_MS) {
+        last_disp_blink_ms = now;
+        disp_blink_on = !disp_blink_on;
     }
 
-    bool blink_time  = (edit_state == EDIT_TIME);
-    bool blink_speed = (edit_state == EDIT_SPEED);
+    bool blink_time  = (change_mode == CHANGE_TIME);
+    bool blink_speed = (change_mode == CHANGE_SPEED);
 
-    if (blink_speed && !blink_on) {
+    if (blink_speed && !disp_blink_on) {
         tm1637_disp_clear(&speedDisplay);
     } else {
         tm1637_disp_printf(&speedDisplay, "%4u", speed_value);
     }
 
-    if (blink_time && !blink_on) {
+    if (blink_time && !disp_blink_on) {
         tm1637_disp_clear(&timeDisplay);
     } else {
         tm1637_disp_printf(&timeDisplay, "%4u", time_value_100ms);
@@ -435,23 +447,15 @@ static void update_displays(void)
 static void update_leds(void)
 {
     HAL_GPIO_WritePin(LED_MODE_GPIO_Port, LED_MODE_Pin,
-                      (app_mode == MODE_TIMED) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+                      (app_mode == MODE_REPEAT) ? GPIO_PIN_RESET : GPIO_PIN_SET);
     HAL_GPIO_WritePin(LED_START_GPIO_Port, LED_START_Pin,
-                      (timed_running) ? GPIO_PIN_SET : GPIO_PIN_RESET);
+                      (repeat_started) ? GPIO_PIN_RESET : GPIO_PIN_SET);
 
     uint32_t now = HAL_GetTick();
     GPIO_PinState dbg = (now - last_can_rx_ms <= LED_RX_HOLD_MS) ? GPIO_PIN_SET : GPIO_PIN_RESET;
     HAL_GPIO_WritePin(LED_DBG_GPIO_Port, LED_DBG_Pin, dbg);
 }
 
-static void app_tick(void)
-{
-    handle_buttons();
-    timed_fsm_tick();
-    poll_can_rx();
-    update_displays();
-    update_leds();
-}
 
 void send_speed(int16_t speed)
 {
@@ -476,8 +480,26 @@ static void poll_can_rx(void)
     uint8_t data[CAN_MESSAGE_SIZE];
     uint32_t now = HAL_GetTick();
 
-    while (HAL_CAN_GetRxFifoFillLevel(&hcan, CAN_RX_FIFO0) > 0) {
-        if (HAL_CAN_GetRxMessage(&hcan, CAN_RX_FIFO0, &hdr, data) == HAL_OK) {
+    while (HAL_CAN_GetRxFifoFillLevel(&hcan, CAN_RX_FIFO0) > 0)
+    {
+        if (HAL_CAN_GetRxMessage(&hcan, CAN_RX_FIFO0, &hdr, data) == HAL_OK)
+        {
+        	uint8_t addr = hdr.StdId&0x7F;
+        	uint16_t type = hdr.StdId-addr;
+			if (type == 0x700)
+			{
+				if (hdr.DLC == 1)
+				{
+					if (data[0] == 0x7F)
+					{
+						//motor not inited
+						uint8_t d[8];
+						d[0] = 0x01; // Start Node
+						d[1] = addr;
+						CAN_Send(0x00, d, 2);
+					}
+				}
+			}
             last_can_rx_ms = now;
         } else {
             break;
