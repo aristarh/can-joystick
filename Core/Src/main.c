@@ -85,7 +85,7 @@ typedef struct
 
 typedef enum {
     MODE_DIRECT = 0,
-	MODE_REPEAT,
+//	MODE_REPEAT,
     MODE_CHANGE
 } work_modes;
 
@@ -128,8 +128,8 @@ static bool repeat_started = false;
 static bool repeat_up = true;
 static uint32_t repeat_time = 0;
 
-static uint16_t  speed_value = 10;
-static uint16_t time_value_100ms = 5;
+static uint16_t  speed_value = 200;
+static uint16_t time_value_100ms = 15;
 
 static uint32_t last_disp_blink_ms = 0;
 static bool     disp_blink_on = true;
@@ -340,7 +340,7 @@ static void mode_short_press(void)
     	if (change_mode == CHANGE_TIME)
     		change_mode = CHANGE_SPEED;
     	else change_mode = CHANGE_TIME;
-    } else app_mode = (app_mode == MODE_DIRECT) ? MODE_REPEAT : MODE_DIRECT;
+    }// else app_mode = (app_mode == MODE_DIRECT) ? MODE_REPEAT : MODE_DIRECT;
 }
 
 static void mode_long_press(void)
@@ -365,7 +365,7 @@ static void handle_buttons(void)
     BUTTON_STATE dn = check_button(BUTTON_DOWN);
     if (ms == BS_HOLD) mode_long_press();
     else if (ms == BS_PRESSED) mode_short_press();
-    if (app_mode == MODE_REPEAT)
+//    if (app_mode == MODE_REPEAT)
     {
     	BUTTON_STATE st = check_button(BUTTON_START);
     	if (st == BS_RELEASED)
@@ -396,15 +396,16 @@ static void handle_buttons(void)
     	}
     } else if (app_mode == MODE_DIRECT)
     {
+    	if (repeat_started)
+		{
+			start_stop_timed();
+		} else
     	if (buttons[BUTTON_UP].pressed) send_speed(speed_value);
     	else if (buttons[BUTTON_DOWN].pressed) send_speed(-speed_value);
     	else send_speed(0);
-    } else if (app_mode == MODE_REPEAT)
+    }// else if (app_mode == MODE_REPEAT)
     {
-    	if (repeat_started)
-    	{
-    		start_stop_timed();
-    	}
+
     }
 }
 
@@ -446,10 +447,10 @@ static void update_displays(void)
 
 static void update_leds(void)
 {
-    HAL_GPIO_WritePin(LED_MODE_GPIO_Port, LED_MODE_Pin,
-                      (app_mode == MODE_REPEAT) ? GPIO_PIN_RESET : GPIO_PIN_SET);
-    HAL_GPIO_WritePin(LED_START_GPIO_Port, LED_START_Pin,
-                      (repeat_started) ? GPIO_PIN_RESET : GPIO_PIN_SET);
+//    HAL_GPIO_WritePin(LED_MODE_GPIO_Port, LED_MODE_Pin,
+//                      (app_mode == MODE_REPEAT) ? GPIO_PIN_RESET : GPIO_PIN_SET);
+//    HAL_GPIO_WritePin(LED_START_GPIO_Port, LED_START_Pin,
+//                      (repeat_started) ? GPIO_PIN_RESET : GPIO_PIN_SET);
 
     uint32_t now = HAL_GetTick();
     GPIO_PinState dbg = (now - last_can_rx_ms <= LED_RX_HOLD_MS) ? GPIO_PIN_SET : GPIO_PIN_RESET;
